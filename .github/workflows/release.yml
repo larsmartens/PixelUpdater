@@ -62,35 +62,52 @@ jobs:
           java-version: 17
           cache: gradle
 
-      - name: Decode release keystore
-        id: release_keystore
-        if: ${{ secrets.RELEASE_KEYSTORE_BASE64 != '' }}
+      - name: Prepare keystore
+        env:
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
         run: |
-          echo -n "${{ secrets.RELEASE_KEYSTORE_BASE64 }}" | base64 -d > keystore.jks
-
-      - name: Generate debug keystore fallback
-        if: ${{ secrets.RELEASE_KEYSTORE_BASE64 == '' }}
-        run: |
-          keytool -genkey -v -keystore debug.keystore -storetype PKCS12 -storepass android -alias androiddebugkey \
-            -keypass android -keyalg RSA -keysize 2048 -validity 10000 \
-            -dname "CN=Android Debug,O=Android,C=US"
+          if [ -n "${RELEASE_KEYSTORE_BASE64}" ]; then
+            echo -n "${RELEASE_KEYSTORE_BASE64}" | base64 -d > keystore.jks
+          else
+            keytool -genkey -v -keystore debug.keystore -storetype PKCS12 -storepass android -alias androiddebugkey \
+              -keypass android -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
 
       - name: Create SSH KEY
-        if: ${{ secrets.SIGNING_KEY != '' }}
+        env:
+          SIGNING_KEY_SECRET: ${{ secrets.SIGNING_KEY }}
         run: |
-          echo "${{ secrets.SIGNING_KEY }}" > pixelupdater.key
-          chmod 600 pixelupdater.key
+          if [ -n "${SIGNING_KEY_SECRET}" ]; then
+            echo "${SIGNING_KEY_SECRET}" > pixelupdater.key
+            chmod 600 pixelupdater.key
+          fi
 
       - name: Build Release apk
         env:
           PROJECT_URL: https://github.com/${{ github.repository }}
-          RELEASE_KEYSTORE: ${{ secrets.RELEASE_KEYSTORE_BASE64 != '' && format('{0}/keystore.jks', github.workspace) || format('{0}/debug.keystore', github.workspace) }}
-          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEYSTORE_BASE64 != '' && 'release' || 'androiddebugkey' }}
-          RELEASE_KEY_PASSPHRASE: ${{ secrets.RELEASE_KEYSTORE_BASE64 != '' && secrets.RELEASE_KEY_PASSPHRASE || 'android' }}
-          RELEASE_KEYSTORE_PASSPHRASE: ${{ secrets.RELEASE_KEYSTORE_BASE64 != '' && secrets.RELEASE_KEYSTORE_PASSPHRASE || 'android' }}
-          SIGNING_KEY: ${{ secrets.SIGNING_KEY != '' && format('{0}/pixelupdater.key', github.workspace) || '' }}
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+          RELEASE_KEY_PASSPHRASE_SECRET: ${{ secrets.RELEASE_KEY_PASSPHRASE }}
+          RELEASE_KEYSTORE_PASSPHRASE_SECRET: ${{ secrets.RELEASE_KEYSTORE_PASSPHRASE }}
+          SIGNING_KEY_SECRET: ${{ secrets.SIGNING_KEY }}
           SIGNING_KEY_PASSPHRASE: ${{ secrets.SIGNING_KEY_PASSPHRASE }}
         run: |
+          if [ -n "${RELEASE_KEYSTORE_BASE64}" ]; then
+            export RELEASE_KEYSTORE="${GITHUB_WORKSPACE}/keystore.jks"
+            export RELEASE_KEY_ALIAS="release"
+            export RELEASE_KEY_PASSPHRASE="${RELEASE_KEY_PASSPHRASE_SECRET}"
+            export RELEASE_KEYSTORE_PASSPHRASE="${RELEASE_KEYSTORE_PASSPHRASE_SECRET}"
+          else
+            export RELEASE_KEYSTORE="${GITHUB_WORKSPACE}/debug.keystore"
+            export RELEASE_KEY_ALIAS="androiddebugkey"
+            export RELEASE_KEY_PASSPHRASE="android"
+            export RELEASE_KEYSTORE_PASSPHRASE="android"
+          fi
+          if [ -n "${SIGNING_KEY_SECRET}" ]; then
+            export SIGNING_KEY="${GITHUB_WORKSPACE}/pixelupdater.key"
+          else
+            export SIGNING_KEY=""
+          fi
           ./gradlew --write-verification-metadata sha256,sha512 help
           ./gradlew zipRelease
           if [ -n "${SIGNING_KEY}" ]; then
