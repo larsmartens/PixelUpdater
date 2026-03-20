@@ -114,6 +114,22 @@ fun getVersionName(git: Git, triple: VersionTriple): String {
     }
 }
 
+fun normalizeProjectUrl(remoteUrl: String?): String? {
+    if (remoteUrl.isNullOrBlank()) {
+        return null
+    }
+
+    val trimmed = remoteUrl.removeSuffix(".git")
+
+    return when {
+        trimmed.startsWith("https://github.com/") -> trimmed
+        trimmed.startsWith("http://github.com/") -> "https://" + trimmed.removePrefix("http://")
+        trimmed.startsWith("git@github.com:") ->
+            "https://github.com/" + trimmed.removePrefix("git@github.com:")
+        else -> null
+    }
+}
+
 fun getSelectedDevice(): String {
     val adbExecutable = android.adbExecutable
 
@@ -148,7 +164,12 @@ val gitVersionCode = getVersionCode(gitVersionTriple)
 val gitVersionName = getVersionName(git, gitVersionTriple)
 val gitBranch = git.repository.branch
 
-val projectUrl = "https://github.com/PixelUpdater/PixelUpdater"
+val projectUrl = sequenceOf(
+    System.getenv("PROJECT_URL"),
+    System.getenv("GITHUB_REPOSITORY")?.let { "https://github.com/$it" },
+    normalizeProjectUrl(git.repository.config.getString("remote", "origin", "url")),
+    "https://github.com/PixelUpdater/PixelUpdater",
+).first { !it.isNullOrBlank() }!!
 
 val extraDir = layout.buildDirectory.map { it.dir("extra") }
 val archiveDir = extraDir.map { it.dir("archive") }

@@ -38,6 +38,8 @@ jobs:
             cache: gradle
 
         - name: update Json Release
+          env:
+            PROJECT_URL: https://github.com/${{ github.repository }}
           run: ./gradlew updateJsonRelease
 
         - name: Upload release-info

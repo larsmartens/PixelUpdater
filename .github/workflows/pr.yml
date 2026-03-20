@@ -74,6 +74,8 @@ jobs:
           echo "RELEASE_KEYSTORE_PASSPHRASE=android" >> $GITHUB_ENV
 
       - name: Build PR
+        env:
+          PROJECT_URL: https://github.com/${{ github.repository }}
         run: |
           ./gradlew --write-verification-metadata sha256,sha512 help
           ./gradlew zipRelease
