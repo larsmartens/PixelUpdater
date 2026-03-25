@@ -16,6 +16,7 @@ jobs:
           uses: actions/checkout@v4
           with:
             submodules: true
+            fetch-depth: 0
 
         # https://github.com/actions/checkout/issues/290
         - name: Preserve tag annotations
@@ -60,20 +61,10 @@ jobs:
             name: release.json
           continue-on-error: true
 
-        - name: Prepend to changelog.txt
-          env:
-            RELEASE_BODY: ${{ github.event.release.body }}
+        - name: Generate changelog.md
           run: |
-            DATE="$(echo ${{ github.event.release.published_at }} | sed -E 's/T.+//')"
-            if [ -f changelog.md ]; then
-              mv changelog.md changelog-old.md
-            fi
-            echo -e "### $DATE ${{ steps.get_version.outputs.version }}-release\n" > changelog.md
-            echo $RELEASE_BODY >> changelog.md
-            if [ -f changelog-old.md ]; then
-              echo >> changelog.md
-              cat changelog-old.md >> changelog.md
-            fi
+            chmod +x scripts/generate_changelog.sh
+            ./scripts/generate_changelog.sh "${{ github.event.release.tag_name }}" changelog.md "${{ github.event.release.tag_name }}"
 
         # Update the release.json file and changelog.md, commit and push
         - name: Update release.json
