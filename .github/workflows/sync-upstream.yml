@@ -1,0 +1,203 @@
+name: Sync Upstream
+
+on:
+  schedule:
+    - cron: "45 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    env:
+      PROJECT_URL: https://github.com/${{ github.repository }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream remote
+        run: git remote add upstream https://github.com/PixelUpdater/PixelUpdater.git || true
+
+      - name: Fetch upstream
+        run: git fetch upstream development --tags
+
+      - name: Check for upstream commits
+        id: check
+        run: |
+          BEHIND=$(git rev-list HEAD..upstream/development --count)
+          echo "behind=$BEHIND" >> "$GITHUB_OUTPUT"
+          if [ "$BEHIND" != "0" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "Upstream is $BEHIND commit(s) ahead"
+
+      - name: Capture fork baseline
+        id: base
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Merge upstream
+        if: steps.check.outputs.behind != '0'
+        run: |
+          git merge upstream/development --no-edit -X ours || {
+            git diff --name-only --diff-filter=U > conflicts.txt
+            while IFS= read -r path; do
+              [ -n "$path" ] || continue
+              case "$path" in
+                .github/workflows/*)
+                  git restore --source="${{ steps.base.outputs.sha }}" --staged --worktree -- "$path" 2>/dev/null || git rm -f -- "$path"
+                  ;;
+                *)
+                  git checkout --ours -- "$path" 2>/dev/null || git rm -f -- "$path"
+                  ;;
+              esac
+            done < conflicts.txt
+            rm -f conflicts.txt
+            git add -A
+            git commit --no-edit
+          }
+
+      - name: Restore fork workflows
+        if: steps.check.outputs.behind != '0'
+        run: |
+          git restore --source="${{ steps.base.outputs.sha }}" --staged --worktree .github/workflows || true
+          if ! git diff --quiet -- .github/workflows; then
+            git add .github/workflows
+            git commit -m "chore: preserve fork workflows after upstream sync"
+          fi
+
+      - name: Push synced branch
+        if: steps.check.outputs.behind != '0'
+        run: git push origin development
+
+      - name: Validate gradle wrapper checksum
+        uses: gradle/wrapper-validation-action@v2
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: gradle
+
+      - name: Prepare keystore
+        env:
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "${RELEASE_KEYSTORE_BASE64}" ]; then
+            echo -n "${RELEASE_KEYSTORE_BASE64}" | base64 -d > keystore.jks
+          else
+            keytool -genkey -v -keystore debug.keystore -storetype PKCS12 -storepass android -alias androiddebugkey \
+              -keypass android -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
+
+      - name: Create SSH key
+        env:
+          SIGNING_KEY_SECRET: ${{ secrets.SIGNING_KEY }}
+        run: |
+          if [ -n "${SIGNING_KEY_SECRET}" ]; then
+            echo "${SIGNING_KEY_SECRET}" > pixelupdater.key
+            chmod 600 pixelupdater.key
+          fi
+
+      - name: Build release module
+        env:
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+          RELEASE_KEY_PASSPHRASE_SECRET: ${{ secrets.RELEASE_KEY_PASSPHRASE }}
+          RELEASE_KEYSTORE_PASSPHRASE_SECRET: ${{ secrets.RELEASE_KEYSTORE_PASSPHRASE }}
+          SIGNING_KEY_SECRET: ${{ secrets.SIGNING_KEY }}
+          SIGNING_KEY_PASSPHRASE: ${{ secrets.SIGNING_KEY_PASSPHRASE }}
+        run: |
+          if [ -n "${RELEASE_KEYSTORE_BASE64}" ]; then
+            export RELEASE_KEYSTORE="${GITHUB_WORKSPACE}/keystore.jks"
+            export RELEASE_KEY_ALIAS="release"
+            export RELEASE_KEY_PASSPHRASE="${RELEASE_KEY_PASSPHRASE_SECRET}"
+            export RELEASE_KEYSTORE_PASSPHRASE="${RELEASE_KEYSTORE_PASSPHRASE_SECRET}"
+          else
+            export RELEASE_KEYSTORE="${GITHUB_WORKSPACE}/debug.keystore"
+            export RELEASE_KEY_ALIAS="androiddebugkey"
+            export RELEASE_KEY_PASSPHRASE="android"
+            export RELEASE_KEYSTORE_PASSPHRASE="android"
+          fi
+          if [ -n "${SIGNING_KEY_SECRET}" ]; then
+            export SIGNING_KEY="${GITHUB_WORKSPACE}/pixelupdater.key"
+          else
+            export SIGNING_KEY=""
+          fi
+          ./gradlew --write-verification-metadata sha256,sha512 help
+          ./gradlew zipRelease
+          if [ -n "${SIGNING_KEY}" ]; then
+            ./gradlew signReleaseZip
+          fi
+          ./gradlew updateJsonRelease
+
+      - name: Read release metadata
+        id: release
+        run: |
+          VERSION=$(jq -r .version app/build/distributions/release.json)
+          ZIP_URL=$(jq -r .zipUrl app/build/distributions/release.json)
+          ZIP_NAME=$(basename "$ZIP_URL")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "zip_name=$ZIP_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Upload sync artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: PixelUpdater-sync-${{ steps.release.outputs.version }}
+          path: app/build/distributions/release/*
+
+      - name: Create GitHub release
+        if: steps.check.outputs.should_release == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.release.outputs.version }}
+          name: Release ${{ steps.release.outputs.version }}
+          body: Automated fork build for ${{ steps.release.outputs.version }}.
+          files: app/build/distributions/release/${{ steps.release.outputs.zip_name }}
+          fail_on_unmatched_files: true
+          make_latest: true
+
+      - name: Update fork update-links branch
+        if: steps.check.outputs.should_release == 'true'
+        run: |
+          mkdir -p /tmp/pixelupdater-release
+          cp app/build/distributions/release.json /tmp/pixelupdater-release/release.json
+          git fetch origin update-links:update-links
+          git checkout update-links
+          mv /tmp/pixelupdater-release/release.json release.json
+          DATE="$(date -u +%F)"
+          if [ -f changelog.md ]; then
+            mv changelog.md changelog-old.md
+          fi
+          {
+            echo "### ${DATE} ${{ steps.release.outputs.version }}-release"
+            echo
+            echo "Automated fork build from larsmartens/PixelUpdater."
+            if [ -f changelog-old.md ]; then
+              echo
+              cat changelog-old.md
+            fi
+          } > changelog.md
+          rm -f changelog-old.md
+          git add release.json changelog.md
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: update fork release links"
+            git push origin update-links
+          fi
