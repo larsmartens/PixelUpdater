@@ -1,6 +1,6 @@
 {
-    "zipUrl": "https://github.com/larsmartens/PixelUpdater/releases/download/v0.210.r8.gce86879/PixelUpdater-v0.210.r8.gce86879-release.zip",
+    "zipUrl": "https://github.com/larsmartens/PixelUpdater/releases/download/v0.210.r11.g74f0c9c/PixelUpdater-v0.210.r11.g74f0c9c-release.zip",
     "changelog": "https://github.com/larsmartens/PixelUpdater/raw/update-links/changelog.md",
-    "version": "v0.210.r8.gce86879",
-    "versionCode": 13762568
+    "version": "v0.210.r11.g74f0c9c",
+    "versionCode": 13762571
 }
